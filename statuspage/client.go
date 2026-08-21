@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -18,6 +19,17 @@ const (
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+	// CacheTTL controls how long GetStatus/GetComponents results are reused
+	// within this process. 0 disables caching. Useful for CLIs that call the
+	// decider once per remote (fujin status) instead of hitting the API N
+	// times per invocation.
+	CacheTTL time.Duration
+
+	mu               sync.Mutex
+	statusCache      *StatusInfo
+	statusChecked    time.Time
+	componentsCache  []Component
+	componentsChecked time.Time
 }
 
 // NewClient returns a new Client. Pass an empty string to use the default
@@ -35,24 +47,43 @@ func NewClient(baseURL string) *Client {
 }
 
 // GetStatus returns the overall status indicator from /api/v2/status.json.
+// Results are cached for CacheTTL when set.
 func (c *Client) GetStatus() (*StatusInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.CacheTTL > 0 && c.statusCache != nil && time.Since(c.statusChecked) < c.CacheTTL {
+		st := *c.statusCache
+		return &st, nil
+	}
+
 	var res struct {
 		Status StatusInfo `json:"status"`
 	}
 	if err := c.get("/status.json", &res); err != nil {
 		return nil, err
 	}
+	c.statusCache = &res.Status
+	c.statusChecked = time.Now()
 	return &res.Status, nil
 }
 
 // GetComponents returns all components from /api/v2/components.json.
+// Results are cached for CacheTTL when set.
 func (c *Client) GetComponents() ([]Component, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.CacheTTL > 0 && c.componentsCache != nil && time.Since(c.componentsChecked) < c.CacheTTL {
+		return append([]Component(nil), c.componentsCache...), nil
+	}
+
 	var res struct {
 		Components []Component `json:"components"`
 	}
 	if err := c.get("/components.json", &res); err != nil {
 		return nil, err
 	}
+	c.componentsCache = append(c.componentsCache[:0], res.Components...)
+	c.componentsChecked = time.Now()
 	return res.Components, nil
 }
 

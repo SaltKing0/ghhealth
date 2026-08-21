@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 )
 
 const baseURL = "https://www.githubstatus.com/api/v2"
@@ -152,6 +153,64 @@ func TestClient_MalformedJSON(t *testing.T) {
 	c := NewClient(srv.URL)
 	if _, err := c.GetStatus(); err == nil {
 		t.Fatal("expected error on malformed JSON, got nil")
+	}
+}
+
+func TestClient_GetStatus_CacheWithinTTL(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(loadFixture(t, "summary.json"))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	c.CacheTTL = time.Minute
+
+	c.GetStatus()
+	c.GetStatus()
+	if hits != 1 {
+		t.Fatalf("expected 1 HTTP hit within TTL, got %d", hits)
+	}
+}
+
+func TestClient_GetStatus_CacheExpires(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(loadFixture(t, "summary.json"))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	c.CacheTTL = 30 * time.Millisecond
+
+	c.GetStatus()
+	time.Sleep(50 * time.Millisecond)
+	c.GetStatus()
+	if hits != 2 {
+		t.Fatalf("expected 2 HTTP hits after TTL expiry, got %d", hits)
+	}
+}
+
+func TestClient_GetComponents_CacheWithinTTL(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(loadFixture(t, "components.json"))
+	}))
+	defer srv.Close()
+
+	c := NewClient(srv.URL)
+	c.CacheTTL = time.Minute
+
+	c.GetComponents()
+	c.GetComponents()
+	if hits != 1 {
+		t.Fatalf("expected 1 HTTP hit within TTL, got %d", hits)
 	}
 }
 

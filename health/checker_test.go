@@ -112,3 +112,84 @@ func TestOnSample_Called(t *testing.T) {
 		t.Errorf("unexpected endpoint: %s", samples[0].Endpoint)
 	}
 }
+
+func TestCheckAll_CacheWithinTTL(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New([]string{srv.URL}, 10*time.Second)
+	c.CacheTTL = time.Minute
+
+	c.CheckAll()
+	r2 := c.CheckAll()
+	if hits != 1 {
+		t.Fatalf("expected 1 HTTP hit within TTL, got %d", hits)
+	}
+	if len(r2) != 1 || r2[0].StatusCode != 200 {
+		t.Fatalf("cached result wrong: %+v", r2)
+	}
+}
+
+func TestCheckAll_CacheExpires(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New([]string{srv.URL}, 10*time.Second)
+	c.CacheTTL = 30 * time.Millisecond
+
+	c.CheckAll()
+	time.Sleep(50 * time.Millisecond)
+	c.CheckAll()
+	if hits != 2 {
+		t.Fatalf("expected 2 HTTP hits after TTL expiry, got %d", hits)
+	}
+}
+
+func TestCheckAll_CacheDisabled(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := New([]string{srv.URL}, 10*time.Second)
+	c.CacheTTL = 0 // disabled
+
+	c.CheckAll()
+	c.CheckAll()
+	if hits != 2 {
+		t.Fatalf("expected 2 HTTP hits with cache disabled, got %d", hits)
+	}
+}
+
+func TestCheckAll_CacheDoesNotRefireOnSample(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	var samples []HealthSample
+	c := New([]string{srv.URL}, 10*time.Second)
+	c.CacheTTL = time.Minute
+	c.OnSample = func(s HealthSample) { samples = append(samples, s) }
+
+	c.CheckAll()
+	c.CheckAll()
+	if hits != 1 {
+		t.Fatalf("expected 1 HTTP hit, got %d", hits)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("expected OnSample to fire only on real checks, got %d samples", len(samples))
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -31,17 +32,27 @@ type Checker struct {
 	Endpoints []string
 	Interval  time.Duration
 	Timeout   time.Duration
-	Client    *http.Client
+	// CacheTTL controls how long CheckAll results are reused. Within the TTL,
+	// CheckAll returns the previous results without hitting the network and
+	// OnSample is NOT fired again (a sample was already recorded when the
+	// check actually ran). 0 disables caching.
+	CacheTTL time.Duration
+	Client   *http.Client
 	// OnSample is invoked for every completed check (may be nil).
 	OnSample func(HealthSample)
+
+	mu          sync.Mutex
+	lastResults []Result
+	lastChecked time.Time
 }
 
-// New creates a default Checker.
+// New creates a default Checker with a 30s result cache.
 func New(endpoints []string, interval time.Duration) *Checker {
 	return &Checker{
 		Endpoints: endpoints,
 		Interval:  interval,
 		Timeout:   10 * time.Second,
+		CacheTTL:  30 * time.Second,
 		Client: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -49,8 +60,16 @@ func New(endpoints []string, interval time.Duration) *Checker {
 }
 
 // CheckAll runs one health check against every endpoint, invokes OnSample for
-// each, and returns the results.
+// each, and returns the results. Results from the last real check are reused
+// while the CacheTTL has not expired; the returned slice is a copy.
 func (c *Checker) CheckAll() []Result {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.CacheTTL > 0 && !c.lastChecked.IsZero() && time.Since(c.lastChecked) < c.CacheTTL {
+		return append([]Result(nil), c.lastResults...)
+	}
+
 	results := make([]Result, 0, len(c.Endpoints))
 	for _, ep := range c.Endpoints {
 		r := c.checkOne(ep)
@@ -65,6 +84,8 @@ func (c *Checker) CheckAll() []Result {
 		}
 		results = append(results, r)
 	}
+	c.lastResults = append(c.lastResults[:0], results...)
+	c.lastChecked = time.Now()
 	return results
 }
 
